@@ -1,62 +1,40 @@
-document.addEventListener("DOMContentLoaded", () => {
-  const tableHead = document.querySelector("#data-table thead");
-  const tableBody = document.querySelector("#data-table tbody");
-  const loading = document.querySelector("#loading");
-  const errorDiv = document.querySelector("#error");
-
-  async function loadData() {
-    try {
-      const response = await fetch("/api/data");
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      renderTable(data);
-    } catch (error) {
-      showError(error);
-    } finally {
-      loading.style.display = "none";
-    }
-  }
-
-  function renderTable(data) {
-    if (!data || data.length === 0) {
-      showError(new Error("Нет данных для отображения"));
-      return;
-    }
-
-    // Очистка таблицы
-    tableHead.innerHTML = "";
-    tableBody.innerHTML = "";
-
-    // Заголовки
-    const headerRow = document.createElement("tr");
-    data[0].forEach((header) => {
-      const th = document.createElement("th");
-      th.textContent = header;
-      headerRow.appendChild(th);
-    });
-    tableHead.appendChild(headerRow);
-
-    // Данные
-    data.slice(1).forEach((row) => {
-      const tr = document.createElement("tr");
-      row.forEach((cell) => {
-        const td = document.createElement("td");
-        td.textContent = cell;
-        tr.appendChild(td);
-      });
-      tableBody.appendChild(tr);
-    });
-  }
-
-  function showError(error) {
+document.addEventListener("DOMContentLoaded", async () => {
+  try {
+    const response = await fetch("/api/containers");
+    if (!response.ok) throw new Error("Network error");
+    const containers = await response.json();
+    renderContainers(containers);
+  } catch (error) {
     console.error("Error:", error);
-    errorDiv.textContent = `Ошибка: ${error.message}`;
+    document.getElementById(
+      "container-list"
+    ).innerHTML = `<div class="error">Ошибка загрузки данных: ${error.message}</div>`;
   }
-
-  // Первоначальная загрузка
-  loadData();
 });
+
+function renderContainers(containers) {
+  const container = document.getElementById("container-list");
+  container.innerHTML = containers
+    .map(
+      (container) => `
+    <div class="container-card">
+      <div class="image-container">
+        ${
+          container.photo
+            ? `<img src="${container.photo}" alt="${container.type}" loading="lazy" 
+            onerror="this.onerror=null;this.src='/placeholder.jpg'">`
+            : '<div class="image-placeholder">Нет фото</div>'
+        }
+      </div>
+      <div class="info-container">
+        <h3>${container.type} ${container.number}</h3>
+        <p><strong>Город:</strong> ${container.city}</p>
+        <p><strong>Поставщик:</strong> ${container.supplier}</p>
+        <p><strong>Терминал:</strong> ${container.terminal}</p>
+        <p class="price">${container.price} руб.</p>
+      </div>
+    </div>
+  `
+    )
+    .join("");
+}

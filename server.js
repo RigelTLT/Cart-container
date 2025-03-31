@@ -1,41 +1,54 @@
 require("dotenv").config();
 const express = require("express");
-const { google } = require("googleapis");
-const cors = require("cors");
 const path = require("path");
+const cors = require("cors");
+const { getDataFromGoogleSheet } = require("./googleSheetsService");
+const { convertYandexDiskLinks } = require("./yandexDiskService");
 
 const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Аутентификация Google
-const auth = new google.auth.GoogleAuth({
-  keyFile: path.join(__dirname, "service-account.json"),
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
+// Serve static files from frontend
+app.use(express.static(path.join(__dirname, "frontend", "public")));
 
-// Получение данных
-app.get("/api/data", async (req, res) => {
+// API endpoint
+app.get("/api/containers", async (req, res) => {
   try {
-    const sheets = google.sheets({
-      version: "v4",
-      auth: await auth.getClient(),
-    });
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.SPREADSHEET_ID,
-      range: "'ОС НВ'!A:G",
-    });
-    res.json(response.data.values);
+    let data = await getDataFromGoogleSheet();
+
+    data = await Promise.all(
+      data.map(async (item) => {
+        if (item.Фото) {
+          item.photoUrl = await convertYandexDiskLinks(item.Фото);
+        }
+        return {
+          city: item.Город,
+          supplier: item.Поставщик,
+          type: item.Тип,
+          number: item.Номер,
+          photo: item.photoUrl || "",
+          terminal: item.Терминал,
+          price: item.Цена,
+        };
+      })
+    );
+
+    res.json(data);
   } catch (error) {
-    console.error("API Error:", error);
+    console.error("Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Обслуживание фронтенда
-app.use(express.static(path.join(__dirname, "../frontend")));
+// Handle SPA routing
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "frontend", "public", "index.html"));
+});
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`Server running on http://localhost:${PORT}`)
-);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
