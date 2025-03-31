@@ -1,7 +1,7 @@
 {
   "name": "cart-container",
   "version": "1.0.0",
-  "main": "src/app.js",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "build:frontend": "cd frontend && npm install && npm run build",
