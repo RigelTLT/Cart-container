@@ -46,12 +46,6 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function renderContainers(containers) {
-    let contPrice;
-    if (container.price !== "Без цены") {
-      contPrice = container.price + " руб";
-    } else {
-      contPrice = container.price;
-    }
     elements.containerList.innerHTML = containers
       .map(
         (container) => `
@@ -71,7 +65,7 @@ document.addEventListener("DOMContentLoaded", function () {
             </div>
           </div>
           <div class="card-footer bg-white">
-            <span class="text-danger fw-bold">${contPrice}</span>
+            <span class="text-danger fw-bold">${container.price}</span>
           </div>
         </div>
       </div>

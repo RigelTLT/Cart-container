@@ -85,7 +85,7 @@ app.get("/api/containers", async (req, res) => {
           number: row.get("Номер"),
           photo: photoUrl,
           terminal: row.get("Терминал"),
-          price: row.get("Цена") || "Без цены",
+          price: row.get("Цена") + " Руб" || "Без цены",
         };
       })
     );
