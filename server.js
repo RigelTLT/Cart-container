@@ -49,96 +49,76 @@ async function getDoc() {
   return doc;
 }
 
-// Добавляем лимитер запросов к Imgur
-const imgurLimiter = {
-  lastRequest: 0,
-  async wait() {
-    const now = Date.now();
-    const delay = Math.max(0, 1100 - (now - this.lastRequest));
-    this.lastRequest = now + delay;
-    await new Promise((resolve) => setTimeout(resolve, delay));
-  },
-};
-
-// Обновленная функция processImageUrl
-const processImgurUrl = async (url) => {
-  try {
-    await imgurLimiter.wait();
-
-    // Если это прямая ссылка на изображение
-    if (url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-      return url;
-    }
-
-    const imageId = url.split("/").pop().split(".")[0];
-
-    // Для альбомов Imgur
-    if (url.includes("/a/")) {
-      const albumId = imageId;
-      try {
-        const response = await axios.get(
-          `https://api.imgur.com/3/album/${albumId}`,
-          {
-            headers: {
-              Authorization: `Client-ID ${
-                process.env.IMGUR_CLIENT_ID || "17c7de12c5f06c1"
-              }`,
-            },
-            timeout: 3000,
-          }
-        );
-        return (
-          response.data.data.images[0]?.link ||
-          `https://i.imgur.com/${albumId}.jpg`
-        );
-      } catch (apiError) {
-        console.log("Using Imgur fallback for album");
-        return `https://i.imgur.com/${albumId}.jpg`;
-      }
-    }
-
-    // Для одиночных изображений
-    return `https://i.imgur.com/${imageId}.jpg`;
-  } catch (error) {
-    console.error("Imgur processing error:", error);
-    return "/placeholder.jpg";
-  }
-};
-
 // Обновленная функция processImageUrl
 async function processImageUrl(url) {
   if (!url || typeof url !== "string") {
     return "/placeholder.jpg";
   }
 
+  // Проверка кэша
   const cacheKey = `img:${url}`;
   if (imageCache.has(cacheKey)) {
     return imageCache.get(cacheKey);
   }
 
   try {
-    new URL(url); // Валидация URL
+    // Проверка валидности URL
+    const parsedUrl = new URL(url);
 
     // Обработка Imgur
     if (url.includes("imgur.com")) {
-      const result = await processImgurUrl(url);
-      imageCache.set(cacheKey, result);
-      return result;
+      try {
+        // Для прямых ссылок на изображения
+        if (url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+          // Проверим доступность изображения
+          await axios.head(url, { timeout: 3000 });
+          imageCache.set(cacheKey, url);
+          return url;
+        }
+
+        // Для альбомов и одиночных изображений
+        let imageId;
+        if (url.includes("/a/")) {
+          // Альбомы Imgur
+          imageId = url.split("/a/")[1].split(/[?#/]/)[0];
+        } else {
+          // Одиночные изображения
+          imageId = parsedUrl.pathname.split("/").pop().split(".")[0];
+        }
+
+        // Попробуем разные форматы
+        const formats = ["jpg", "png", "jpeg", "webp"];
+        for (const format of formats) {
+          const testUrl = `https://i.imgur.com/${imageId}.${format}`;
+          try {
+            await axios.head(testUrl, { timeout: 3000 });
+            imageCache.set(cacheKey, testUrl);
+            return testUrl;
+          } catch (e) {
+            continue;
+          }
+        }
+
+        return "/placeholder.jpg";
+      } catch (error) {
+        console.error("Imgur processing error:", error);
+        return "/placeholder.jpg";
+      }
     }
 
     // Обработка Яндекс.Диска
-    if (url.includes("yandex.ru/d/")) {
+    if (url.includes("yandex.ru/d/") || url.includes("disk.yandex.ru/d/")) {
       const publicKey = url.match(/d\/([^?#]+)/)[1];
       const resultUrl = `/yandex-proxy/${publicKey}`;
       imageCache.set(cacheKey, resultUrl);
       return resultUrl;
     }
 
-    // Все остальные URL
+    // Для всех остальных URL
     imageCache.set(cacheKey, url);
     return url;
   } catch (error) {
-    console.error("Image processing error:", error.message);
+    console.error("Image processing error:", url, error.message);
     return "/placeholder.jpg";
   }
 }
@@ -221,46 +201,118 @@ app.get("/image-proxy", async (req, res) => {
     res.redirect("/placeholder.jpg");
   }
 });
-
+const yandexCache = new Map();
 // Обновленный прокси для Яндекс.Диска
 app.get("/yandex-proxy/:publicKey", async (req, res) => {
-  try {
-    const publicKey = req.params.publicKey;
-    if (!publicKey) {
-      return res.redirect("/placeholder.jpg");
-    }
+  const { publicKey } = req.params;
+  if (!publicKey) {
+    return res.redirect("/placeholder.jpg");
+  }
 
-    // Получаем download ссылку через API Яндекс.Диска
-    const apiUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
-      `https://disk.yandex.ru/d/${publicKey}`
+  try {
+    const publicUrl = `https://disk.yandex.ru/d/${publicKey}`;
+
+    // 1. Проверяем, доступен ли ресурс
+    const resourceUrl = `https://cloud-api.yandex.net/v1/disk/public/resources?public_key=${encodeURIComponent(
+      publicUrl
     )}`;
 
-    const apiResponse = await axios.get(apiUrl, {
-      timeout: 8000,
+    const resourceResponse = await axios.get(resourceUrl, {
+      timeout: 10000, // Увеличиваем таймаут
       headers: {
         Accept: "application/json",
+        Authorization: `OAuth ${process.env.YANDEX_OAUTH_TOKEN}`,
       },
     });
 
-    if (!apiResponse.data.href) {
-      throw new Error("No download link found");
+    // 2. Если ресурс не найден (404) или доступ запрещён (403)
+    if (resourceResponse.status !== 200) {
+      throw new Error(`Yandex.Disk API error: ${resourceResponse.statusText}`);
     }
 
-    // Загружаем файл по полученной ссылке
-    const fileResponse = await axios.get(apiResponse.data.href, {
-      responseType: "stream",
-      timeout: 15000,
-    });
+    const resourceData = resourceResponse.data;
 
-    // Устанавливаем правильные заголовки
-    res.set({
-      "Content-Type": fileResponse.headers["content-type"],
-      "Cache-Control": "public, max-age=86400", // Кэшируем на 1 день
-    });
+    // 3. Если это папка — ищем первое изображение внутри
+    if (resourceData.type === "dir" && resourceData._embedded?.items) {
+      const images = resourceData._embedded.items.filter(
+        (item) => item.type === "file" && item.mime_type?.startsWith("image/")
+      );
 
-    fileResponse.data.pipe(res);
+      if (images.length === 0) {
+        throw new Error("No images found in the folder");
+      }
+
+      // Берём первое изображение (можно добавить выбор через ?image=1 в URL)
+      const firstImage = images[0];
+      const downloadUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
+        firstImage.public_url
+      )}`;
+
+      const downloadResponse = await axios.get(downloadUrl, {
+        timeout: 10000,
+        headers: {
+          Accept: "application/json",
+          Authorization: `OAuth ${process.env.YANDEX_OAUTH_TOKEN}`,
+        },
+      });
+
+      if (!downloadResponse.data?.href) {
+        throw new Error("Download link not found");
+      }
+
+      // Загружаем и отдаём изображение
+      const fileResponse = await axios.get(downloadResponse.data.href, {
+        responseType: "stream",
+        timeout: 15000,
+      });
+
+      res.set({
+        "Content-Type": fileResponse.headers["content-type"],
+        "Cache-Control": "public, max-age=86400",
+      });
+      return fileResponse.data.pipe(res);
+    }
+
+    // 4. Если это файл — проверяем, что это изображение
+    if (resourceData.type === "file") {
+      if (!resourceData.mime_type?.startsWith("image/")) {
+        throw new Error("Resource is not an image");
+      }
+
+      const downloadUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
+        publicUrl
+      )}`;
+
+      const downloadResponse = await axios.get(downloadUrl, {
+        timeout: 10000,
+        headers: {
+          Accept: "application/json",
+          Authorization: `OAuth ${process.env.YANDEX_OAUTH_TOKEN}`,
+        },
+      });
+
+      if (!downloadResponse.data?.href) {
+        throw new Error("Download link not found");
+      }
+
+      const fileResponse = await axios.get(downloadResponse.data.href, {
+        responseType: "stream",
+        timeout: 15000,
+      });
+
+      res.set({
+        "Content-Type": fileResponse.headers["content-type"],
+        "Cache-Control": "public, max-age=86400",
+      });
+      return fileResponse.data.pipe(res);
+    }
+
+    throw new Error("Unknown resource type");
   } catch (error) {
-    console.error("Yandex.Disk proxy error:", error.message);
+    console.error(
+      `Yandex.Disk error (publicKey: ${publicKey}):`,
+      error.message
+    );
     res.redirect("/placeholder.jpg");
   }
 });
