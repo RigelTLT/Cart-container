@@ -12,8 +12,23 @@ const PORT = process.env.PORT || 5000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-app.get("/health", (req, res) => {
-  res.status(200).send("OK");
+app.get("/health", async (req, res) => {
+  try {
+    // Проверяем подключение к Google Sheets
+    const doc = await getDoc();
+    await doc.loadInfo();
+
+    res.status(200).json({
+      status: "OK",
+      db: "connected",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: "DB connection failed",
+      error: error.message,
+    });
+  }
 });
 
 // Авторизация Google Sheets
@@ -150,6 +165,20 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Запуск сервера с обработкой ошибок
+const server = app
+  .listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  })
+  .on("error", (err) => {
+    console.error("Server failed to start:", err);
+    process.exit(1);
+  });
+
+// Обработка сигналов завершения
+process.on("SIGTERM", () => {
+  server.close(() => {
+    console.log("Server stopped");
+    process.exit(0);
+  });
 });
