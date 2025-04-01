@@ -130,8 +130,14 @@ app.get("/api/containers", async (req, res) => {
     const sheet = doc.sheetsByIndex[0];
     const rows = await sheet.getRows();
 
+    // Фильтруем строки, где поле "ко" не пустое
+    const filteredRows = rows.filter((row) => {
+      const city = row.get("ко");
+      return city && city.trim() !== "";
+    });
+
     const data = await Promise.all(
-      rows.map(async (row) => {
+      filteredRows.map(async (row) => {
         try {
           const imageUrl = await processImageUrl(row.get("Фото"));
 
@@ -165,7 +171,7 @@ app.get("/api/containers", async (req, res) => {
       success: true,
       data,
       pagination: {
-        total: rows.length,
+        total: data.length, // Используем длину отфильтрованного массива
         page: 1,
         totalPages: 1,
       },
