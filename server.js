@@ -14,13 +14,11 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/health", async (req, res) => {
   try {
-    // Быстрая проверка без подключения к БД
     res.status(200).json({
       status: "OK",
       timestamp: new Date().toISOString(),
     });
 
-    // Асинхронная проверка БД (не блокирует ответ)
     setTimeout(async () => {
       try {
         const doc = await getDoc();
@@ -51,7 +49,7 @@ async function getDoc() {
   return doc;
 }
 
-// переписанная функция processImageUrl
+// Обновленная функция processImageUrl
 async function processImageUrl(url) {
   if (!url || typeof url !== "string") {
     return "/placeholder.jpg";
@@ -68,51 +66,37 @@ async function processImageUrl(url) {
     new URL(url);
 
     // Обработка Imgur
-    const imgurLimiter = {
-      lastRequest: 0,
-      async wait() {
-        const now = Date.now();
-        const delay = Math.max(0, 1100 - (now - this.lastRequest));
-        this.lastRequest = now + delay;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      },
-    };
-
     if (url.includes("imgur.com")) {
-      await imgurLimiter.wait(); // Ограничение 1 запрос в секунду
-
       try {
-        if (url.includes("/a/")) {
-          const albumId = url.split("/a/")[1].split("/")[0];
-          const response = await axios.get(
-            `https://api.imgur.com/3/album/${albumId}`,
-            {
-              headers: {
-                Authorization: `Client-ID ${
-                  process.env.IMGUR_CLIENT_ID || "17c7de12c5f06c1"
-                }`,
-              },
-              timeout: 3000,
-            }
-          );
-          return response.data.data.images[0]?.link || "/placeholder.jpg";
+        // Для прямых ссылок на изображения
+        if (url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+          imageCache.set(cacheKey, url);
+          return url;
         }
-        return url.includes(".") ? url : `${url}.jpg`;
+
+        // Для альбомов
+        if (url.includes("/a/")) {
+          const albumId = url.split("/a/")[1].split(/[?#/]/)[0];
+          const resultUrl = `https://i.imgur.com/${albumId}.jpg`;
+          imageCache.set(cacheKey, resultUrl);
+          return resultUrl;
+        }
+
+        // Для одиночных изображений
+        const imageId = url.split("/").pop().split(".")[0];
+        const resultUrl = `https://i.imgur.com/${imageId}.jpg`;
+        imageCache.set(cacheKey, resultUrl);
+        return resultUrl;
       } catch (error) {
-        // Fallback для Imgur без API
-        return url.replace("imgur.com/a/", "i.imgur.com/") + ".jpg";
+        console.error("Imgur processing error:", error);
+        return "/placeholder.jpg";
       }
     }
 
     // Обработка Яндекс.Диска
     if (url.includes("yandex.ru/d/")) {
-      // Проверяем кэш
-      const cacheKey = `yandex:${url}`;
-      if (imageCache.has(cacheKey)) {
-        return imageCache.get(cacheKey);
-      }
-
-      const resultUrl = `/yandex-proxy?url=${encodeURIComponent(url)}`;
+      const publicKey = url.match(/d\/([^?#]+)/)[1];
+      const resultUrl = `/yandex-proxy/${publicKey}`;
       imageCache.set(cacheKey, resultUrl);
       return resultUrl;
     }
@@ -146,7 +130,7 @@ app.get("/api/containers", async (req, res) => {
             photo: imageUrl,
             terminal: row.get("Терминал") || "—",
             link: row.get("Фото"),
-            price: row.get("Цена") + " Руб." || "Без цены",
+            price: row.get("Цена") ? `${row.get("Цена")} Руб.` : "Без цены",
           };
         } catch (error) {
           console.error("Error processing row:", error);
@@ -158,7 +142,7 @@ app.get("/api/containers", async (req, res) => {
             photo: "/placeholder.jpg",
             terminal: row.get("Терминал") || "—",
             link: row.get("Фото"),
-            price: row.get("Цена") + " Руб." || "Без цены",
+            price: row.get("Цена") ? `${row.get("Цена")} Руб.` : "Без цены",
           };
         }
       })
@@ -188,12 +172,10 @@ app.get("/image-proxy", async (req, res) => {
   try {
     const url = decodeURIComponent(req.query.url);
 
-    // Блокировка невалидных URL
     if (!url.startsWith("http")) {
       return res.redirect("/placeholder.jpg");
     }
 
-    // Стандартная обработка
     const response = await axios.get(url, {
       responseType: "stream",
       timeout: 5000,
@@ -207,88 +189,48 @@ app.get("/image-proxy", async (req, res) => {
   }
 });
 
-app.get("/yandex-proxy", async (req, res) => {
-  const MAX_RETRIES = 2;
-  const RETRY_DELAY = 1500;
-  let attempt = 0;
-
-  const processRequest = async () => {
-    try {
-      const publicUrl = decodeURIComponent(req.query.url);
-      const publicKey = publicUrl.split("/d/")[1]?.split(/[?#]/)[0];
-
-      // Валидация URL
-      if (!publicKey) {
-        throw new Error("Некорректная ссылка Яндекс.Диска");
-      }
-
-      // 1. Получаем ссылку для скачивания
-      const apiResponse = await axios.get(
-        "https://cloud-api.yandex.net/v1/disk/public/resources/download",
-        {
-          params: { public_key: `https://disk.yandex.ru/d/${publicKey}` },
-          timeout: 8000,
-        }
-      );
-
-      // 2. Загружаем файл с повторами
-      const downloadFile = async (url, retryCount = 0) => {
-        try {
-          const response = await axios.get(url, {
-            responseType: "stream",
-            timeout: 15000,
-          });
-          return response;
-        } catch (error) {
-          if (retryCount < MAX_RETRIES) {
-            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-            return downloadFile(url, retryCount + 1);
-          }
-          throw error;
-        }
-      };
-
-      const fileResponse = await downloadFile(apiResponse.data.href);
-
-      // 3. Отправляем файл клиенту
-      res.set("Content-Type", fileResponse.headers["content-type"]);
-      fileResponse.data.pipe(res);
-    } catch (error) {
-      attempt++;
-      if (attempt <= MAX_RETRIES) {
-        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-        return processRequest();
-      }
-
-      console.error("Yandex.Disk final error:", {
-        url: req.query.url,
-        error: error.message,
-        stack: error.stack,
-      });
-
-      // Fallback: пробуем альтернативный метод
-      try {
-        const publicKey = decodeURIComponent(req.query.url).split("/d/")[1];
-        const fallbackUrl = `https://getfile.dokpub.com/yandex/get/${publicKey}`;
-        const fallbackResponse = await axios.get(fallbackUrl, {
-          responseType: "stream",
-          timeout: 10000,
-        });
-        fallbackResponse.data.pipe(res);
-      } catch (fallbackError) {
-        res.redirect("/placeholder.jpg");
-      }
+// Обновленный прокси для Яндекс.Диска
+app.get("/yandex-proxy/:publicKey", async (req, res) => {
+  try {
+    const publicKey = req.params.publicKey;
+    if (!publicKey) {
+      return res.redirect("/placeholder.jpg");
     }
-  };
 
-  await processRequest();
+    const apiUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
+      `https://disk.yandex.ru/d/${publicKey}`
+    )}`;
+
+    const apiResponse = await axios.get(apiUrl, {
+      timeout: 8000,
+      headers: {
+        Accept: "application/json",
+      },
+    });
+
+    if (!apiResponse.data.href) {
+      throw new Error("No download link found");
+    }
+
+    const fileResponse = await axios.get(apiResponse.data.href, {
+      responseType: "stream",
+      timeout: 15000,
+    });
+
+    res.set("Content-Type", fileResponse.headers["content-type"]);
+    fileResponse.data.pipe(res);
+  } catch (error) {
+    console.error("Yandex.Disk error:", error.message);
+    res.redirect("/placeholder.jpg");
+  }
 });
+
 // Статические файлы
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Запуск сервера с обработкой ошибок
+// Запуск сервера
 const server = app
   .listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
@@ -298,7 +240,6 @@ const server = app
     process.exit(1);
   });
 
-// Обработка сигналов завершения
 process.on("SIGTERM", () => {
   server.close(() => {
     console.log("Server stopped");

@@ -70,14 +70,16 @@ document.addEventListener("DOMContentLoaded", function () {
       <div class="col">
         <div class="card h-100">
           <img src="${
-            container.photo.includes("yandex.ru")
-              ? `/yandex-proxy?url=${encodeURIComponent(container.photo)}`
+            container.photo.startsWith("/yandex-proxy/")
+              ? container.photo
+              : container.photo.includes("yandex.ru")
+              ? `/yandex-proxy/${container.photo.split("d/")[1].split("/")[0]}`
               : container.photo
-          }"   
+          }" 
                class="card-img-top"
                alt="${container.type}"
                loading="lazy"
-               onerror="this.src='/placeholder.jpg'">
+               onerror="this.onerror=null;this.src='/placeholder.jpg'">
           <div class="card-body">
             <h5 class="card-title">${highlightMatches(
               container.type
@@ -90,9 +92,11 @@ document.addEventListener("DOMContentLoaded", function () {
               <p><strong>Терминал:</strong> ${highlightMatches(
                 container.terminal
               )}</p>
-              <p><strong>Ссылка:</strong><a href="${highlightMatches(
+              ${
                 container.link
-              )}">Ссылка</a></p>
+                  ? `<p><strong>Ссылка:</strong> <a href="${container.link}" target="_blank">Открыть</a></p>`
+                  : ""
+              }
             </div>
           </div>
           <div class="card-footer">
@@ -126,7 +130,8 @@ document.addEventListener("DOMContentLoaded", function () {
     const prevLi = document.createElement("li");
     prevLi.className = `page-item ${state.currentPage === 1 ? "disabled" : ""}`;
     prevLi.innerHTML = `<a class="page-link" href="#">Назад</a>`;
-    prevLi.addEventListener("click", () => {
+    prevLi.addEventListener("click", (e) => {
+      e.preventDefault();
       if (state.currentPage > 1) {
         state.currentPage--;
         renderContainers();
@@ -151,7 +156,8 @@ document.addEventListener("DOMContentLoaded", function () {
       const firstLi = document.createElement("li");
       firstLi.className = "page-item";
       firstLi.innerHTML = `<a class="page-link" href="#">1</a>`;
-      firstLi.addEventListener("click", () => {
+      firstLi.addEventListener("click", (e) => {
+        e.preventDefault();
         state.currentPage = 1;
         renderContainers();
         updatePagination();
@@ -170,7 +176,8 @@ document.addEventListener("DOMContentLoaded", function () {
       const pageLi = document.createElement("li");
       pageLi.className = `page-item ${i === state.currentPage ? "active" : ""}`;
       pageLi.innerHTML = `<a class="page-link" href="#">${i}</a>`;
-      pageLi.addEventListener("click", () => {
+      pageLi.addEventListener("click", (e) => {
+        e.preventDefault();
         state.currentPage = i;
         renderContainers();
         updatePagination();
@@ -189,7 +196,8 @@ document.addEventListener("DOMContentLoaded", function () {
       const lastLi = document.createElement("li");
       lastLi.className = "page-item";
       lastLi.innerHTML = `<a class="page-link" href="#">${totalPages}</a>`;
-      lastLi.addEventListener("click", () => {
+      lastLi.addEventListener("click", (e) => {
+        e.preventDefault();
         state.currentPage = totalPages;
         renderContainers();
         updatePagination();
@@ -203,7 +211,8 @@ document.addEventListener("DOMContentLoaded", function () {
       state.currentPage === totalPages ? "disabled" : ""
     }`;
     nextLi.innerHTML = `<a class="page-link" href="#">Вперед</a>`;
-    nextLi.addEventListener("click", () => {
+    nextLi.addEventListener("click", (e) => {
+      e.preventDefault();
       if (state.currentPage < totalPages) {
         state.currentPage++;
         renderContainers();
@@ -286,10 +295,4 @@ document.addEventListener("DOMContentLoaded", function () {
       </div>
     `;
   }
-
-  // Глобальная функция для обработки ошибок изображений
-  window.handleImageError = function (img) {
-    img.onerror = null;
-    img.src = "/placeholder.jpg";
-  };
 });
