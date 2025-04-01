@@ -49,44 +49,84 @@ async function getDoc() {
   return doc;
 }
 
-// Обновленная функция processImageUrl
+// Обновленная функция processImageUrl с использованием IMGUR_CLIENT_ID
 async function processImageUrl(url) {
   if (!url || typeof url !== "string") {
     return "/placeholder.jpg";
   }
 
-  // Проверка кэша
   const cacheKey = `img:${url}`;
   if (imageCache.has(cacheKey)) {
     return imageCache.get(cacheKey);
   }
 
   try {
-    // Проверка валидности URL
     const parsedUrl = new URL(url);
 
-    // Обработка Imgur
+    // Обработка Imgur с Client-ID
     if (url.includes("imgur.com")) {
       try {
         // Для прямых ссылок на изображения
         if (url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-          // Проверим доступность изображения
-          await axios.head(url, { timeout: 3000 });
+          await axios.head(url, {
+            timeout: 3000,
+            headers: {
+              Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}`,
+            },
+          });
           imageCache.set(cacheKey, url);
           return url;
         }
 
-        // Для альбомов и одиночных изображений
         let imageId;
         if (url.includes("/a/")) {
-          // Альбомы Imgur
+          // Для альбомов используем API Imgur
+          const albumId = url.split("/a/")[1].split(/[?#/]/)[0];
+          const albumResponse = await axios.get(
+            `https://api.imgur.com/3/album/${albumId}`,
+            {
+              headers: {
+                Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}`,
+              },
+              timeout: 3000,
+            }
+          );
+
+          if (albumResponse.data.data?.images?.length > 0) {
+            const firstImage = albumResponse.data.data.images[0];
+            imageCache.set(cacheKey, firstImage.link);
+            return firstImage.link;
+          }
+          return "/placeholder.jpg";
+        } else {
+          // Для одиночных изображений
+          imageId = parsedUrl.pathname.split("/").pop().split(".")[0];
+          const imageResponse = await axios.get(
+            `https://api.imgur.com/3/image/${imageId}`,
+            {
+              headers: {
+                Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}`,
+              },
+              timeout: 3000,
+            }
+          );
+
+          if (imageResponse.data.data?.link) {
+            imageCache.set(cacheKey, imageResponse.data.data.link);
+            return imageResponse.data.data.link;
+          }
+          return "/placeholder.jpg";
+        }
+      } catch (error) {
+        console.error("Imgur API error:", error);
+        // Fallback к старому методу, если API не сработал
+        let imageId;
+        if (url.includes("/a/")) {
           imageId = url.split("/a/")[1].split(/[?#/]/)[0];
         } else {
-          // Одиночные изображения
           imageId = parsedUrl.pathname.split("/").pop().split(".")[0];
         }
 
-        // Попробуем разные форматы
         const formats = ["jpg", "png", "jpeg", "webp"];
         for (const format of formats) {
           const testUrl = `https://i.imgur.com/${imageId}.${format}`;
@@ -98,10 +138,6 @@ async function processImageUrl(url) {
             continue;
           }
         }
-
-        return "/placeholder.jpg";
-      } catch (error) {
-        console.error("Imgur processing error:", error);
         return "/placeholder.jpg";
       }
     }
@@ -114,7 +150,6 @@ async function processImageUrl(url) {
       return resultUrl;
     }
 
-    // Для всех остальных URL
     imageCache.set(cacheKey, url);
     return url;
   } catch (error) {
@@ -171,7 +206,7 @@ app.get("/api/containers", async (req, res) => {
       success: true,
       data,
       pagination: {
-        total: data.length, // Используем длину отфильтрованного массива
+        total: data.length,
         page: 1,
         totalPages: 1,
       },
@@ -207,38 +242,42 @@ app.get("/image-proxy", async (req, res) => {
     res.redirect("/placeholder.jpg");
   }
 });
+
 const yandexCache = new Map();
 // Обновленный прокси для Яндекс.Диска
 app.get("/yandex-proxy/:publicKey", async (req, res) => {
   const { publicKey } = req.params;
-  if (!publicKey) {
+  if (!publicKey || !process.env.YANDEX_OAUTH_TOKEN) {
     return res.redirect("/placeholder.jpg");
   }
 
   try {
-    const publicUrl = `https://disk.yandex.ru/d/${publicKey}`;
+    const cacheKey = `yandex:${publicKey}`;
+    if (yandexCache.has(cacheKey)) {
+      const cachedUrl = yandexCache.get(cacheKey);
+      return res.redirect(cachedUrl);
+    }
 
-    // 1. Проверяем, доступен ли ресурс
+    const publicUrl = `https://disk.yandex.ru/d/${publicKey}`;
     const resourceUrl = `https://cloud-api.yandex.net/v1/disk/public/resources?public_key=${encodeURIComponent(
       publicUrl
     )}`;
 
     const resourceResponse = await axios.get(resourceUrl, {
-      timeout: 10000, // Увеличиваем таймаут
+      timeout: 10000,
       headers: {
         Accept: "application/json",
         Authorization: `OAuth ${process.env.YANDEX_OAUTH_TOKEN}`,
       },
     });
 
-    // 2. Если ресурс не найден (404) или доступ запрещён (403)
     if (resourceResponse.status !== 200) {
       throw new Error(`Yandex.Disk API error: ${resourceResponse.statusText}`);
     }
 
     const resourceData = resourceResponse.data;
 
-    // 3. Если это папка — ищем первое изображение внутри
+    // Если это папка — ищем первое изображение внутри
     if (resourceData.type === "dir" && resourceData._embedded?.items) {
       const images = resourceData._embedded.items.filter(
         (item) => item.type === "file" && item.mime_type?.startsWith("image/")
@@ -248,7 +287,6 @@ app.get("/yandex-proxy/:publicKey", async (req, res) => {
         throw new Error("No images found in the folder");
       }
 
-      // Берём первое изображение (можно добавить выбор через ?image=1 в URL)
       const firstImage = images[0];
       const downloadUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
         firstImage.public_url
@@ -266,7 +304,7 @@ app.get("/yandex-proxy/:publicKey", async (req, res) => {
         throw new Error("Download link not found");
       }
 
-      // Загружаем и отдаём изображение
+      yandexCache.set(cacheKey, downloadResponse.data.href);
       const fileResponse = await axios.get(downloadResponse.data.href, {
         responseType: "stream",
         timeout: 15000,
@@ -279,7 +317,7 @@ app.get("/yandex-proxy/:publicKey", async (req, res) => {
       return fileResponse.data.pipe(res);
     }
 
-    // 4. Если это файл — проверяем, что это изображение
+    // Если это файл — проверяем, что это изображение
     if (resourceData.type === "file") {
       if (!resourceData.mime_type?.startsWith("image/")) {
         throw new Error("Resource is not an image");
@@ -301,6 +339,7 @@ app.get("/yandex-proxy/:publicKey", async (req, res) => {
         throw new Error("Download link not found");
       }
 
+      yandexCache.set(cacheKey, downloadResponse.data.href);
       const fileResponse = await axios.get(downloadResponse.data.href, {
         responseType: "stream",
         timeout: 15000,
