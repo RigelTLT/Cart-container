@@ -1,14 +1,17 @@
-document.addEventListener("DOMContentLoaded", function () {
+document.addEventListener("DOMContentLoaded", () => {
+  // Конфигурация
   const config = {
     apiEndpoint: "/api/containers",
-    itemsPerPage: 10,
+    itemsPerPage: 12,
   };
 
+  // Состояние
   const state = {
     currentPage: 1,
     totalPages: 1,
   };
 
+  // Элементы DOM
   const elements = {
     containerList: document.getElementById("container-list"),
     pagination: document.getElementById("pagination"),
@@ -16,6 +19,7 @@ document.addEventListener("DOMContentLoaded", function () {
     errorContainer: document.getElementById("error-container"),
   };
 
+  // Инициализация
   init();
 
   async function init() {
@@ -28,18 +32,14 @@ document.addEventListener("DOMContentLoaded", function () {
   async function loadData() {
     try {
       const response = await fetch(
-        `${config.apiEndpoint}?page=${state.currentPage}&limit=${config.itemsPerPage}`
+        `${config.apiEndpoint}?page=${state.currentPage}`
       );
-
-      if (!response.ok) throw new Error("Ошибка загрузки данных");
-
       const result = await response.json();
 
       if (!result.success) throw new Error(result.error || "Ошибка сервера");
 
       renderContainers(result.data);
       renderPagination(result.pagination);
-      state.totalPages = result.pagination.totalPages;
     } catch (error) {
       showError(error.message);
     }
@@ -52,7 +52,7 @@ document.addEventListener("DOMContentLoaded", function () {
       <div class="col-md-4 mb-4">
         <div class="card h-100">
           <img src="${container.photo}" 
-               class="card-img-top lazy-image"
+               class="card-img-top"
                alt="${container.type}"
                loading="lazy"
                onerror="handleImageError(this)">
@@ -62,9 +62,10 @@ document.addEventListener("DOMContentLoaded", function () {
               <p><strong>Город:</strong> ${container.city}</p>
               <p><strong>Поставщик:</strong> ${container.supplier}</p>
               <p><strong>Терминал:</strong> ${container.terminal}</p>
+              <p><strong>Ссылка:</strong> ${container.link}</p>
             </div>
           </div>
-          <div class="card-footer bg-white">
+          <div class="card-footer">
             <span class="text-danger fw-bold">${container.price}</span>
           </div>
         </div>
@@ -74,71 +75,37 @@ document.addEventListener("DOMContentLoaded", function () {
       .join("");
   }
 
-  function handleImageError(img) {
-    console.error("Ошибка загрузки изображения:", img.src);
-    img.onerror = null;
-
-    // Пробуем загрузить через прокси, если это Яндекс.Диск
-    if (img.src.includes("yandex.ru")) {
-      img.src = `/api/yandex-image?url=${encodeURIComponent(img.src)}`;
-    } else {
-      img.src = "/placeholder.jpg";
-    }
-  }
-
   function renderPagination(pagination) {
     if (!pagination || pagination.totalPages <= 1) {
       elements.pagination.innerHTML = "";
       return;
     }
 
-    let html = `<nav><ul class="pagination">`;
-
-    // Кнопка "Назад"
-    html += `<li class="page-item ${state.currentPage === 1 ? "disabled" : ""}">
-      <button class="page-link" data-page="${
-        state.currentPage - 1
-      }">Назад</button>
-    </li>`;
-
-    // Номера страниц
-    const startPage = Math.max(1, state.currentPage - 2);
-    const endPage = Math.min(pagination.totalPages, state.currentPage + 2);
-
-    for (let i = startPage; i <= endPage; i++) {
-      html += `<li class="page-item ${i === state.currentPage ? "active" : ""}">
-        <button class="page-link" data-page="${i}">${i}</button>
-      </li>`;
-    }
-
-    // Кнопка "Вперед"
-    html += `<li class="page-item ${
-      state.currentPage === pagination.totalPages ? "disabled" : ""
-    }">
-      <button class="page-link" data-page="${
-        state.currentPage + 1
-      }">Вперед</button>
-    </li>`;
-
-    html += `</ul></nav>`;
-    elements.pagination.innerHTML = html;
+    elements.pagination.innerHTML = `
+      <nav>
+        <ul class="pagination">
+          ${Array.from(
+            { length: pagination.totalPages },
+            (_, i) => `
+            <li class="page-item ${
+              i + 1 === state.currentPage ? "active" : ""
+            }">
+              <button class="page-link" data-page="${i + 1}">${i + 1}</button>
+            </li>
+          `
+          ).join("")}
+        </ul>
+      </nav>
+    `;
   }
 
   function setupEventListeners() {
     elements.pagination.addEventListener("click", (e) => {
-      const target = e.target.closest("[data-page]");
-      if (!target) return;
+      const pageBtn = e.target.closest("[data-page]");
+      if (!pageBtn) return;
 
-      const newPage = parseInt(target.dataset.page);
-      if (
-        newPage >= 1 &&
-        newPage <= state.totalPages &&
-        newPage !== state.currentPage
-      ) {
-        state.currentPage = newPage;
-        loadData();
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      }
+      state.currentPage = parseInt(pageBtn.dataset.page);
+      loadData();
     });
   }
 
@@ -152,10 +119,24 @@ document.addEventListener("DOMContentLoaded", function () {
 
   function showError(message) {
     elements.errorContainer.innerHTML = `
-      <div class="alert alert-danger alert-dismissible fade show">
+      <div class="alert alert-danger">
         ${message}
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        <button onclick="window.location.reload()">Обновить</button>
       </div>
     `;
   }
 });
+
+// Глобальная функция обработки ошибок изображений
+window.handleImageError = function (img) {
+  img.onerror = null;
+  img.src = "/placeholder.jpg";
+
+  if (img.src.includes("yandex.ru") || img.src.includes("imgur.com")) {
+    fetch(`/api/image-proxy?url=${encodeURIComponent(img.src)}`).then(
+      (res) =>
+        res.ok &&
+        (img.src = `/api/image-proxy?url=${encodeURIComponent(img.src)}`)
+    );
+  }
+};
