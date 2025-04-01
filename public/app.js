@@ -69,7 +69,11 @@ document.addEventListener("DOMContentLoaded", function () {
         (container) => `
       <div class="col">
         <div class="card h-100">
-          <img src="${container.photo}" 
+          <img src="${
+            container.photo.includes("yandex.ru")
+              ? `/yandex-proxy?url=${encodeURIComponent(container.photo)}`
+              : container.photo
+          }"   
                class="card-img-top"
                alt="${container.type}"
                loading="lazy"
