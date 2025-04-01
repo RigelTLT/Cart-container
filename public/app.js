@@ -69,13 +69,7 @@ document.addEventListener("DOMContentLoaded", function () {
         (container) => `
       <div class="col">
         <div class="card h-100">
-          <img src="${
-            container.photo.startsWith("/yandex-proxy/")
-              ? container.photo
-              : container.photo.includes("yandex.ru")
-              ? `/yandex-proxy/${container.photo.split("d/")[1].split("/")[0]}`
-              : container.photo
-          }" 
+          <img src="${container.photo}" 
                class="card-img-top"
                alt="${container.type}"
                loading="lazy"

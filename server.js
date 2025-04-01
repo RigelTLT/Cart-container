@@ -49,48 +49,81 @@ async function getDoc() {
   return doc;
 }
 
+// Добавляем лимитер запросов к Imgur
+const imgurLimiter = {
+  lastRequest: 0,
+  async wait() {
+    const now = Date.now();
+    const delay = Math.max(0, 1100 - (now - this.lastRequest));
+    this.lastRequest = now + delay;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  },
+};
+
+// Обновленная функция processImageUrl
+const processImgurUrl = async (url) => {
+  try {
+    await imgurLimiter.wait();
+
+    // Если это прямая ссылка на изображение
+    if (url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+      return url;
+    }
+
+    const imageId = url.split("/").pop().split(".")[0];
+
+    // Для альбомов Imgur
+    if (url.includes("/a/")) {
+      const albumId = imageId;
+      try {
+        const response = await axios.get(
+          `https://api.imgur.com/3/album/${albumId}`,
+          {
+            headers: {
+              Authorization: `Client-ID ${
+                process.env.IMGUR_CLIENT_ID || "17c7de12c5f06c1"
+              }`,
+            },
+            timeout: 3000,
+          }
+        );
+        return (
+          response.data.data.images[0]?.link ||
+          `https://i.imgur.com/${albumId}.jpg`
+        );
+      } catch (apiError) {
+        console.log("Using Imgur fallback for album");
+        return `https://i.imgur.com/${albumId}.jpg`;
+      }
+    }
+
+    // Для одиночных изображений
+    return `https://i.imgur.com/${imageId}.jpg`;
+  } catch (error) {
+    console.error("Imgur processing error:", error);
+    return "/placeholder.jpg";
+  }
+};
+
 // Обновленная функция processImageUrl
 async function processImageUrl(url) {
   if (!url || typeof url !== "string") {
     return "/placeholder.jpg";
   }
 
-  // Проверка кэша
   const cacheKey = `img:${url}`;
   if (imageCache.has(cacheKey)) {
     return imageCache.get(cacheKey);
   }
 
   try {
-    // Проверка валидности URL
-    new URL(url);
+    new URL(url); // Валидация URL
 
     // Обработка Imgur
     if (url.includes("imgur.com")) {
-      try {
-        // Для прямых ссылок на изображения
-        if (url.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-          imageCache.set(cacheKey, url);
-          return url;
-        }
-
-        // Для альбомов
-        if (url.includes("/a/")) {
-          const albumId = url.split("/a/")[1].split(/[?#/]/)[0];
-          const resultUrl = `https://i.imgur.com/${albumId}.jpg`;
-          imageCache.set(cacheKey, resultUrl);
-          return resultUrl;
-        }
-
-        // Для одиночных изображений
-        const imageId = url.split("/").pop().split(".")[0];
-        const resultUrl = `https://i.imgur.com/${imageId}.jpg`;
-        imageCache.set(cacheKey, resultUrl);
-        return resultUrl;
-      } catch (error) {
-        console.error("Imgur processing error:", error);
-        return "/placeholder.jpg";
-      }
+      const result = await processImgurUrl(url);
+      imageCache.set(cacheKey, result);
+      return result;
     }
 
     // Обработка Яндекс.Диска
@@ -101,11 +134,11 @@ async function processImageUrl(url) {
       return resultUrl;
     }
 
-    // Для всех остальных URL
+    // Все остальные URL
     imageCache.set(cacheKey, url);
     return url;
   } catch (error) {
-    console.error("Image processing error:", url, error.message);
+    console.error("Image processing error:", error.message);
     return "/placeholder.jpg";
   }
 }
@@ -197,6 +230,7 @@ app.get("/yandex-proxy/:publicKey", async (req, res) => {
       return res.redirect("/placeholder.jpg");
     }
 
+    // Получаем download ссылку через API Яндекс.Диска
     const apiUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
       `https://disk.yandex.ru/d/${publicKey}`
     )}`;
@@ -212,15 +246,21 @@ app.get("/yandex-proxy/:publicKey", async (req, res) => {
       throw new Error("No download link found");
     }
 
+    // Загружаем файл по полученной ссылке
     const fileResponse = await axios.get(apiResponse.data.href, {
       responseType: "stream",
       timeout: 15000,
     });
 
-    res.set("Content-Type", fileResponse.headers["content-type"]);
+    // Устанавливаем правильные заголовки
+    res.set({
+      "Content-Type": fileResponse.headers["content-type"],
+      "Cache-Control": "public, max-age=86400", // Кэшируем на 1 день
+    });
+
     fileResponse.data.pipe(res);
   } catch (error) {
-    console.error("Yandex.Disk error:", error.message);
+    console.error("Yandex.Disk proxy error:", error.message);
     res.redirect("/placeholder.jpg");
   }
 });
