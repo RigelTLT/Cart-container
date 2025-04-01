@@ -14,18 +14,25 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/health", async (req, res) => {
   try {
-    // Проверяем подключение к Google Sheets
-    const doc = await getDoc();
-    await doc.loadInfo();
-
+    // Быстрая проверка без подключения к БД
     res.status(200).json({
       status: "OK",
-      db: "connected",
       timestamp: new Date().toISOString(),
     });
+
+    // Асинхронная проверка БД (не блокирует ответ)
+    setTimeout(async () => {
+      try {
+        const doc = await getDoc();
+        await doc.loadInfo();
+        console.log("DB connection verified");
+      } catch (dbError) {
+        console.error("DB check failed:", dbError);
+      }
+    }, 1000);
   } catch (error) {
     res.status(500).json({
-      status: "DB connection failed",
+      status: "Server error",
       error: error.message,
     });
   }
