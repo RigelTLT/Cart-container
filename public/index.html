@@ -8,26 +8,73 @@
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
       rel="stylesheet"
     />
-    <!-- <link rel="stylesheet" href="/styles.css" />-->
+    <style>
+      .card-img-top {
+        height: 200px;
+        object-fit: cover;
+      }
+      #loading {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.8);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+      }
+      .highlight {
+        background-color: yellow;
+      }
+    </style>
   </head>
   <body>
     <div class="container py-4">
-      <!-- Индикатор загрузки -->
-      <div id="loading" style="display: none">
-        <div class="spinner-border"></div>
+      <!-- Поисковая строка -->
+      <div class="row mb-4">
+        <div class="col-md-6">
+          <div class="input-group">
+            <input
+              type="text"
+              id="search-input"
+              class="form-control"
+              placeholder="Поиск по городу, поставщику, типу..."
+            />
+            <button id="search-btn" class="btn btn-primary">Найти</button>
+            <button id="reset-search" class="btn btn-outline-secondary">
+              Сброс
+            </button>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <div class="float-end">
+            <select id="items-per-page" class="form-select">
+              <option value="10">10 на странице</option>
+              <option value="20">20 на странице</option>
+              <option value="50">50 на странице</option>
+              <option value="100">100 на странице</option>
+            </select>
+          </div>
+        </div>
       </div>
 
-      <!-- Заголовок -->
-      <h1 class="text-center mb-4">Каталог контейнеров</h1>
+      <!-- Индикатор загрузки -->
+      <div id="loading">
+        <div class="spinner-border text-primary"></div>
+      </div>
 
-      <!-- Ошибки -->
-      <div id="error-container"></div>
+      <!-- Результаты поиска -->
+      <div id="search-results" class="alert alert-info d-none"></div>
 
       <!-- Список контейнеров -->
       <div id="container-list" class="row row-cols-1 row-cols-md-3 g-4"></div>
 
       <!-- Пагинация -->
-      <div id="pagination" class="d-flex justify-content-center mt-4"></div>
+      <nav aria-label="Page navigation">
+        <ul id="pagination" class="pagination justify-content-center mt-4"></ul>
+      </nav>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
