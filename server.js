@@ -4,6 +4,7 @@ const { GoogleSpreadsheet } = require("google-spreadsheet");
 const { JWT } = require("google-auth-library");
 const axios = require("axios");
 const path = require("path");
+const fs = require("fs");
 const imageCache = new Map();
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -11,6 +12,12 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+
+// Создаем placeholder.jpg если его нет
+const placeholderPath = path.join(__dirname, "public", "placeholder.jpg");
+if (!fs.existsSync(placeholderPath)) {
+  fs.writeFileSync(placeholderPath, "");
+}
 
 app.get("/health", async (req, res) => {
   try {
@@ -49,6 +56,38 @@ async function getDoc() {
   return doc;
 }
 
+// Добавляем функцию для очистки кэша Imgur
+function cleanImgurCache() {
+  const now = Date.now();
+  const cacheTimeout = 24 * 60 * 60 * 1000; // 24 часа
+
+  for (const [key, value] of imageCache.entries()) {
+    if (
+      key.startsWith("img:https://imgur.com") ||
+      key.startsWith("img:https://i.imgur.com")
+    ) {
+      // Если запись в кэше старше 24 часов, удаляем её
+      if (now - value.timestamp > cacheTimeout) {
+        imageCache.delete(key);
+      }
+      // Дополнительно проверяем доступность изображения
+      axios
+        .head(value.url, { timeout: 2000 })
+        .catch(() => imageCache.delete(key));
+    }
+  }
+}
+
+// Функция проверки доступности изображения
+async function checkImageAvailable(url) {
+  try {
+    await axios.head(url, { timeout: 2000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Обновленная функция processImageUrl с использованием IMGUR_CLIENT_ID
 async function processImageUrl(url) {
   if (!url || typeof url !== "string") {
@@ -56,8 +95,14 @@ async function processImageUrl(url) {
   }
 
   const cacheKey = `img:${url}`;
+  // Проверяем кэш с дополнительной валидацией для Imgur
   if (imageCache.has(cacheKey)) {
-    return imageCache.get(cacheKey);
+    const cached = imageCache.get(cacheKey);
+    // Для Imgur делаем дополнительную проверку доступности
+    if (!url.includes("imgur.com") || (await checkImageAvailable(cached.url))) {
+      return cached.url;
+    }
+    imageCache.delete(cacheKey); // Удаляем неработающую ссылку
   }
 
   try {
@@ -74,7 +119,7 @@ async function processImageUrl(url) {
               Authorization: `Client-ID ${process.env.IMGUR_CLIENT_ID}`,
             },
           });
-          imageCache.set(cacheKey, url);
+          imageCache.set(cacheKey, { url, timestamp: Date.now() });
           return url;
         }
 
@@ -94,7 +139,10 @@ async function processImageUrl(url) {
 
           if (albumResponse.data.data?.images?.length > 0) {
             const firstImage = albumResponse.data.data.images[0];
-            imageCache.set(cacheKey, firstImage.link);
+            imageCache.set(cacheKey, {
+              url: firstImage.link,
+              timestamp: Date.now(),
+            });
             return firstImage.link;
           }
           return "/placeholder.jpg";
@@ -112,7 +160,10 @@ async function processImageUrl(url) {
           );
 
           if (imageResponse.data.data?.link) {
-            imageCache.set(cacheKey, imageResponse.data.data.link);
+            imageCache.set(cacheKey, {
+              url: imageResponse.data.data.link,
+              timestamp: Date.now(),
+            });
             return imageResponse.data.data.link;
           }
           return "/placeholder.jpg";
@@ -132,7 +183,7 @@ async function processImageUrl(url) {
           const testUrl = `https://i.imgur.com/${imageId}.${format}`;
           try {
             await axios.head(testUrl, { timeout: 3000 });
-            imageCache.set(cacheKey, testUrl);
+            imageCache.set(cacheKey, { url: testUrl, timestamp: Date.now() });
             return testUrl;
           } catch (e) {
             continue;
@@ -146,11 +197,11 @@ async function processImageUrl(url) {
     if (url.includes("yandex.ru/d/") || url.includes("disk.yandex.ru/d/")) {
       const publicKey = url.match(/d\/([^?#]+)/)[1];
       const resultUrl = `/yandex-proxy/${publicKey}`;
-      imageCache.set(cacheKey, resultUrl);
+      imageCache.set(cacheKey, { url: resultUrl, timestamp: Date.now() });
       return resultUrl;
     }
 
-    imageCache.set(cacheKey, url);
+    imageCache.set(cacheKey, { url, timestamp: Date.now() });
     return url;
   } catch (error) {
     console.error("Image processing error:", url, error.message);
@@ -244,123 +295,141 @@ app.get("/image-proxy", async (req, res) => {
 });
 
 const yandexCache = new Map();
+
 // Обновленный прокси для Яндекс.Диска
 app.get("/yandex-proxy/:publicKey", async (req, res) => {
   const { publicKey } = req.params;
-  if (!publicKey || !process.env.YANDEX_OAUTH_TOKEN) {
+  const cacheKey = `yandex:${publicKey}`;
+
+  if (!publicKey) {
+    console.error("Missing publicKey parameter");
     return res.redirect("/placeholder.jpg");
   }
 
-  try {
-    const cacheKey = `yandex:${publicKey}`;
-    if (yandexCache.has(cacheKey)) {
-      const cachedUrl = yandexCache.get(cacheKey);
-      return res.redirect(cachedUrl);
+  // Проверяем кэш
+  if (yandexCache.has(cacheKey)) {
+    const cached = yandexCache.get(cacheKey);
+    if (cached.expires > Date.now()) {
+      return res.redirect(cached.url);
     }
+    yandexCache.delete(cacheKey);
+  }
 
+  try {
     const publicUrl = `https://disk.yandex.ru/d/${publicKey}`;
-    const resourceUrl = `https://cloud-api.yandex.net/v1/disk/public/resources?public_key=${encodeURIComponent(
-      publicUrl
-    )}`;
 
-    const resourceResponse = await axios.get(resourceUrl, {
-      timeout: 10000,
+    // 1. Пробуем получить HTML страницы и извлечь прямые ссылки на изображения
+    const htmlResponse = await axios.get(publicUrl, {
+      timeout: 5000,
       headers: {
-        Accept: "application/json",
-        Authorization: `OAuth ${process.env.YANDEX_OAUTH_TOKEN}`,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
       },
     });
 
-    if (resourceResponse.status !== 200) {
-      throw new Error(`Yandex.Disk API error: ${resourceResponse.statusText}`);
+    // Ищем все изображения в HTML
+    const imageLinks = [];
+    const regex = /https:\/\/[^"]+\.(jpg|jpeg|png|gif|webp)(\?[^"]+)?/gi;
+    let match;
+    while ((match = regex.exec(htmlResponse.data)) !== null) {
+      if (
+        match[0].includes("downloader.disk.yandex.ru") ||
+        match[0].includes("avatars.mds.yandex.net")
+      ) {
+        imageLinks.push(match[0]);
+      }
     }
 
-    const resourceData = resourceResponse.data;
+    // Если нашли прямые ссылки на изображения
+    if (imageLinks.length > 0) {
+      // Проверяем доступность первого изображения
+      try {
+        await axios.head(imageLinks[0], { timeout: 3000 });
 
-    // Если это папка — ищем первое изображение внутри
-    if (resourceData.type === "dir" && resourceData._embedded?.items) {
-      const images = resourceData._embedded.items.filter(
-        (item) => item.type === "file" && item.mime_type?.startsWith("image/")
+        // Кэшируем на 6 часов
+        yandexCache.set(cacheKey, {
+          url: imageLinks[0],
+          expires: Date.now() + 6 * 60 * 60 * 1000,
+        });
+
+        return res.redirect(imageLinks[0]);
+      } catch (e) {
+        console.log(`Image link not available: ${imageLinks[0]}`);
+      }
+    }
+
+    // 2. Если не нашли прямые ссылки, пробуем API для публичных папок
+    try {
+      const apiResponse = await axios.get(
+        "https://cloud-api.yandex.net/v1/disk/public/resources",
+        {
+          params: {
+            public_key: publicUrl,
+            limit: 100,
+          },
+          timeout: 10000,
+        }
       );
 
-      if (images.length === 0) {
-        throw new Error("No images found in the folder");
+      const resourceData = apiResponse.data;
+
+      // Если это папка с файлами
+      if (resourceData._embedded && resourceData._embedded.items) {
+        const images = resourceData._embedded.items.filter(
+          (item) =>
+            item.type === "file" &&
+            item.mime_type &&
+            item.mime_type.startsWith("image/")
+        );
+
+        if (images.length > 0) {
+          // Берем первое изображение
+          const image = images[0];
+          const downloadUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
+            image.public_url
+          )}`;
+
+          const downloadResponse = await axios.get(downloadUrl, {
+            timeout: 10000,
+          });
+
+          if (downloadResponse.data && downloadResponse.data.href) {
+            // Кэшируем на 6 часов
+            yandexCache.set(cacheKey, {
+              url: downloadResponse.data.href,
+              expires: Date.now() + 6 * 60 * 60 * 1000,
+            });
+
+            return res.redirect(downloadResponse.data.href);
+          }
+        }
       }
-
-      const firstImage = images[0];
-      const downloadUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
-        firstImage.public_url
-      )}`;
-
-      const downloadResponse = await axios.get(downloadUrl, {
-        timeout: 10000,
-        headers: {
-          Accept: "application/json",
-          Authorization: `OAuth ${process.env.YANDEX_OAUTH_TOKEN}`,
-        },
-      });
-
-      if (!downloadResponse.data?.href) {
-        throw new Error("Download link not found");
-      }
-
-      yandexCache.set(cacheKey, downloadResponse.data.href);
-      const fileResponse = await axios.get(downloadResponse.data.href, {
-        responseType: "stream",
-        timeout: 15000,
-      });
-
-      res.set({
-        "Content-Type": fileResponse.headers["content-type"],
-        "Cache-Control": "public, max-age=86400",
-      });
-      return fileResponse.data.pipe(res);
+    } catch (apiError) {
+      console.error(`Yandex API error: ${apiError.message}`);
     }
 
-    // Если это файл — проверяем, что это изображение
-    if (resourceData.type === "file") {
-      if (!resourceData.mime_type?.startsWith("image/")) {
-        throw new Error("Resource is not an image");
-      }
-
-      const downloadUrl = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(
-        publicUrl
-      )}`;
-
-      const downloadResponse = await axios.get(downloadUrl, {
-        timeout: 10000,
-        headers: {
-          Accept: "application/json",
-          Authorization: `OAuth ${process.env.YANDEX_OAUTH_TOKEN}`,
-        },
-      });
-
-      if (!downloadResponse.data?.href) {
-        throw new Error("Download link not found");
-      }
-
-      yandexCache.set(cacheKey, downloadResponse.data.href);
-      const fileResponse = await axios.get(downloadResponse.data.href, {
-        responseType: "stream",
-        timeout: 15000,
-      });
-
-      res.set({
-        "Content-Type": fileResponse.headers["content-type"],
-        "Cache-Control": "public, max-age=86400",
-      });
-      return fileResponse.data.pipe(res);
+    // 3. Fallback - пробуем стандартный путь к изображению
+    const fallbackUrl = `https://downloader.disk.yandex.ru/disk/${publicKey}/`;
+    try {
+      await axios.head(fallbackUrl, { timeout: 3000 });
+      return res.redirect(fallbackUrl);
+    } catch (fallbackError) {
+      console.error(`Fallback method failed: ${fallbackError.message}`);
     }
 
-    throw new Error("Unknown resource type");
+    // Если ничего не сработало
+    throw new Error("All methods failed");
   } catch (error) {
     console.error(
-      `Yandex.Disk error (publicKey: ${publicKey}):`,
+      `Yandex.Disk processing error [${publicKey}]:`,
       error.message
     );
-    res.redirect("/placeholder.jpg");
+    return res.redirect("/placeholder.jpg");
   }
 });
+
+// Запускаем периодическую очистку кэша
+setInterval(cleanImgurCache, 60 * 60 * 1000); // Каждый час
 
 // Статические файлы
 app.get("*", (req, res) => {
